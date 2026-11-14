@@ -1,0 +1,6 @@
+requests>=2.31.0
+colorama>=0.4.6
+pycryptodome>=3.19.0
+# opsional, hanya untuk endpoint AdaKami (solver slider captcha)
+numpy>=1.24
+opencv-python-headless>=4.8
